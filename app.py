@@ -28,7 +28,7 @@ if uploaded_file:
     # 3. RAG Pipeline
     loader = PyPDFLoader("temp.pdf")
     data = loader.load()
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
     chunks = text_splitter.split_documents(data)
     
     # FIX: Use a proper embedding model here
@@ -44,7 +44,17 @@ if uploaded_file:
     
     Question: {question}
     """
-    prompt = ChatPromptTemplate.from_template(template)
+    prompt = ChatPromptTemplate.from_template(
+    """
+    You are a professional Research Assistant. 
+    Use the following pieces of retrieved context to answer the question.
+    If the answer is not in the context, say "I cannot find the answer in the uploaded document." 
+    Do not make up facts.
+    
+    Context: {context}
+    Question: {input}
+    Answer:"""
+)
 
     # 5. The LCEL Chain
     rag_chain = (
