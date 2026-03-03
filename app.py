@@ -1,7 +1,15 @@
-import streamlit as st
 import os
+import ssl
+
+# SSL Bypass for local Windows machines
+os.environ['CURL_CA_BUNDLE'] = ''
+os.environ['PYTHONHTTPSVERIFY'] = '0'
+ssl._create_default_https_context = ssl._create_unverified_context
+
+import streamlit as st
+import tempfile
 from langchain_groq import ChatGroq
-from langchain_community.document_loaders import PyPDFLoader
+from langchain_community.document_loaders import PyPDFLoader, UnstructuredPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -20,54 +28,69 @@ st.title("📄 AI Document Researcher")
 
 uploaded_file = st.file_uploader("Upload your PDF", type="pdf")
 
-# EVERYTHING below this line must be indented to be inside the "if"
 if uploaded_file:
-    with open("temp.pdf", "wb") as f:
-        f.write(uploaded_file.getvalue())
-    
-    # 3. RAG Pipeline
-    loader = PyPDFLoader("temp.pdf")
-    data = loader.load()
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-    chunks = text_splitter.split_documents(data)
-    
-    # FIX: Use a proper embedding model here
-    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-    vectorstore = Chroma.from_documents(chunks, embeddings)
-    retriever = vectorstore.as_retriever()
+    # Save file to temporary location
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+        tmp_file.write(uploaded_file.getvalue())
+        tmp_file_path = tmp_file.name
 
-    # 4. The LLM Setup (Indented inside the IF)
+    # 3. RAG Pipeline Status
+    with st.status("🚀 Processing document...", expanded=True) as status:
+        st.write("🔍 Loading PDF...")
+       # Switch from PyPDFLoader to Unstructured
+        loader = UnstructuredPDFLoader(tmp_file_path, strategy="fast")
+        data = loader.load()
+        
+        st.write("✂️ Creating semantic chunks...")
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+        chunks = text_splitter.split_documents(data)
+        
+        st.write("🧠 Generating Vector Embeddings...")
+        embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+        
+        st.write("📁 Initializing Vector Database...")
+        vectorstore = Chroma.from_documents(chunks, embeddings)
+        retriever = vectorstore.as_retriever(search_kwargs={"k": 6})
+        status.update(label="✅ Document Ready!", state="complete", expanded=False)
+
+    # 4. LLM & Prompt Setup
     llm = ChatGroq(groq_api_key=api_key, model_name="llama-3.3-70b-versatile")
 
-    template = """Answer the question based only on the following context:
-    {context}
-    
-    Question: {question}
-    """
     prompt = ChatPromptTemplate.from_template(
     """
-    You are a professional Research Assistant. 
-    Use the following pieces of retrieved context to answer the question.
-    If the answer is not in the context, say "I cannot find the answer in the uploaded document." 
-    Do not make up facts.
-    
+    You are an expert Document Analyst. 
+    The following context is from the resume of Harsh Balkrishna Patel. 
+    If a question asks about his education, skills, or experience, use the information below.
+
     Context: {context}
     Question: {input}
-    Answer:"""
+    
+    Format your response exactly like this:
+    The final answer is: [answer]
+    """
 )
 
-    # 5. The LCEL Chain
+# 5. The LCEL Chain
+    def format_docs(docs):
+        return "\n\n".join(doc.page_content for doc in docs)
+
     rag_chain = (
-        {"context": retriever, "question": RunnablePassthrough()}
+        {"context": retriever | format_docs, "input": RunnablePassthrough()}
         | prompt
         | llm
         | StrOutputParser()
     )
 
+    # 6. Chat Interface
     user_question = st.text_input("Ask a question about your PDF:")
     
     if user_question:
-        with st.spinner("Thinking..."):
+        with st.spinner("Analyzing..."):
             response = rag_chain.invoke(user_question)
+            
+            # This ensures the output matches your required "Boxed" style
             st.write("### Answer:")
-            st.write(response)
+            st.code(response) # Using .code() makes it look like a final result
+
+    # Cleanup temp file
+    os.remove(tmp_file_path)
